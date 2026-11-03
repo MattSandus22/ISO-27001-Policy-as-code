@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      # The sample policy set is pinned to a date so its findings stay stable.
+      # For a live policy set, remove --as-of and add --strict so an overdue
+      # review or an SoA gap blocks the merge.
+      - name: Lint policies
+        run: policykit lint --as-of 2026-11-03
+      - name: Build site
+        run: policykit build --as-of 2026-11-03 -o site

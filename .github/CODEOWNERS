@@ -1,0 +1,7 @@
+# Pull requests that change policies need approval from the policy owners.
+# In a real organization, map each policy file to its owner's GitHub team, e.g.:
+#   /policies/POL-002-access-control-policy.md   @northwind/it-leads
+# and turn on "Require review from Code Owners" in branch protection.
+
+/policies/   @MattSandus22
+/soa.yaml    @MattSandus22

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "policykit"
+version = "0.1.0"
+description = "Policy-as-code for ISO/IEC 27001:2022: lint policies, generate the Statement of Applicability, and publish a policy site."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Matt Sandus" }]
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0", "Markdown>=3.5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+policykit = "policykit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+policykit = ["data/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

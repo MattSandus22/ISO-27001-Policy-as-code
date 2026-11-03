@@ -1,0 +1,183 @@
+"""Build a static policy portal: index, Statement of Applicability, one page per policy."""
+
+from __future__ import annotations
+
+import html
+import re
+from datetime import date
+from pathlib import Path
+
+import markdown
+
+from . import __version__
+from .lint import Finding
+from .model import Policy, Workspace, control_title
+from .soa import build_soa
+
+CSS = """
+:root{--bg:#f7f7f5;--surface:#fff;--text:#1d1d1f;--muted:#6b6b70;--line:#e4e4e0;--accent:#2f5d8a;
+--ok:#1f7a3a;--warn:#9a6200;--bad:#b42318;--code:#f0f0ec}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141416;--surface:#1d1d20;--text:#ececec;
+--muted:#9a9aa2;--line:#2e2e33;--accent:#8ab4e0;--ok:#6fcf8c;--warn:#e5b45a;--bad:#f28b82;--code:#26262a}}
+:root[data-theme="dark"]{--bg:#141416;--surface:#1d1d20;--text:#ececec;--muted:#9a9aa2;--line:#2e2e33;
+--accent:#8ab4e0;--ok:#6fcf8c;--warn:#e5b45a;--bad:#f28b82;--code:#26262a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 16px 64px}
+nav{display:flex;gap:18px;font-size:14px;margin-bottom:24px;flex-wrap:wrap}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+h1{font-size:26px;margin:0 0 4px;line-height:1.25}h2{font-size:19px;margin:36px 0 10px}
+.muted{color:var(--muted)}.small{font-size:13px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;white-space:nowrap}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:22px 0}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.stat b{display:block;font-size:26px;line-height:1.2}.stat span{color:var(--muted);font-size:13px}
+.stat.alert b{color:var(--bad)}
+.scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;min-width:640px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.pill{display:inline-block;padding:1px 9px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.s-approved,.s-addressed{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
+.s-draft{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.s-retired,.s-excluded{color:var(--muted);background:color-mix(in srgb,var(--muted) 14%,transparent)}
+.s-gap{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent)}
+.overdue{color:var(--bad);font-weight:600}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px 20px;background:var(--surface);
+border:1px solid var(--line);border-radius:10px;padding:16px;margin:18px 0 8px}
+.meta .k{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+article{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 24px 20px;margin-top:16px}
+article h1{display:none}article li{margin:6px 0}
+article strong[id]{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
+background:var(--code);padding:1px 6px;border-radius:5px;scroll-margin-top:16px}
+article table{min-width:0}
+article blockquote{margin:16px 0;padding:6px 14px;border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 8%,transparent);border-radius:0 6px 6px 0}
+@media (max-width:600px){article{padding:4px 16px 16px}}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;border:1px solid var(--line);
+border-radius:6px;padding:2px 7px;background:var(--surface)}
+.findings{list-style:none;padding:0;margin:0;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.findings li{padding:9px 14px;border-bottom:1px solid var(--line)}.findings li:last-child{border-bottom:none}
+.lvl-error{color:var(--bad);font-weight:700}.lvl-warning{color:var(--warn);font-weight:700}
+.soa td:nth-child(2){min-width:260px}
+tr:target{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+footer{margin-top:48px;color:var(--muted);font-size:13px}
+"""
+
+
+def _e(x) -> str:
+    return html.escape(str(x))
+
+
+def _page(title: str, body: str, org: str, depth: int = 0) -> str:
+    up = "../" * depth
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_e(title)}</title><style>{CSS}</style></head>
+<body><main>
+<nav><a href="{up}index.html"><b>{_e(org)} policies</b></a><a href="{up}index.html">Policy register</a>
+<a href="{up}soa.html">Statement of Applicability</a></nav>
+{body}
+<footer>Generated by policykit v{__version__}. Source of truth: the Markdown files in this repository.</footer>
+</main></body></html>
+"""
+
+
+def _status(p: Policy) -> str:
+    return f'<span class="pill s-{_e(p.status)}">{_e(p.status or "unknown")}</span>'
+
+
+def _policy_page(p: Policy, ws: Workspace, as_of: date) -> str:
+    body_html = markdown.markdown(p.body, extensions=["tables", "sane_lists"])
+    body_html = re.sub(r"<strong>([A-Z]{2,5}-\d{2,3})</strong>",
+                       lambda m: f'<strong id="{m.group(1)}">{m.group(1)}</strong>', body_html)
+    nxt = p.next_review(ws.config)
+    review = _e(nxt or "—")
+    if nxt and nxt < as_of and p.status == "approved":
+        review = f'<span class="overdue">{review} (overdue)</span>'
+    meta = [("Status", _status(p)), ("Version", _e(p.meta.get("version", "—"))),
+            ("Owner", _e(p.meta.get("owner", "—"))), ("Approver", _e(p.meta.get("approver", "—"))),
+            ("Approved", _e(p.meta.get("approved_on") or "—")), ("Next review", review),
+            ("Classification", _e(p.meta.get("classification", "Internal")))]
+    meta_html = "".join(f'<div><span class="k">{k}</span>{v}</div>' for k, v in meta)
+    chips = "".join(
+        f'<a class="chip" href="../soa.html#A.{c}" title="{_e(control_title(c))}">A.{_e(c)}</a>'
+        for c in p.controls if c in _titles()
+    )
+    related = ", ".join(f'<a href="{_e(r)}.html">{_e(r)}</a>' for r in p.meta.get("related") or []) or "—"
+    body = (f'<div class="muted mono">{_e(p.id)}</div><h1>{_e(p.title)}</h1>'
+            f'<div class="meta">{meta_html}</div>'
+            f'<p class="small muted">Annex A controls addressed</p><div class="chips">{chips}</div>'
+            f'<p class="small muted">Related policies: {related}</p>'
+            f'<article>{body_html}</article>')
+    return _page(f"{p.id} {p.title}", body, ws.config["organization"], depth=1)
+
+
+def _titles():
+    from .model import annex_a
+    return annex_a()["controls"]
+
+
+def _index(ws: Workspace, findings: list[Finding], as_of: date) -> str:
+    rows, overdue = [], 0
+    for p in sorted(ws.policies, key=lambda x: x.id):
+        nxt = p.next_review(ws.config)
+        late = bool(nxt and nxt < as_of and p.status == "approved")
+        overdue += late
+        review = f'<span class="overdue">{_e(nxt)} overdue</span>' if late else _e(nxt or "—")
+        rows.append(f'<tr><td class="mono">{_e(p.id)}</td><td><a href="policies/{_e(p.id)}.html">{_e(p.title)}</a>'
+                    f'<div class="muted small">{len(p.statements)} statements · {len(p.controls)} controls</div></td>'
+                    f'<td>{_status(p)}</td><td class="mono">{_e(p.meta.get("version", ""))}</td>'
+                    f'<td class="small">{_e(p.meta.get("owner", ""))}</td><td class="small">{review}</td></tr>')
+    soa = build_soa(ws)
+    applicable = [r for r in soa if r.applicable]
+    gaps = sum(r.status == "Gap" for r in soa)
+    approved = sum(p.status == "approved" for p in ws.policies)
+    items = "".join(f'<li><span class="lvl-{f.level}">{f.level}</span> <span class="mono">{_e(f.ref)}</span> '
+                    f'{_e(f.message)}</li>' for f in findings) or "<li>No findings.</li>"
+
+    def stat(v, label, alert=False):
+        return f'<div class="stat{" alert" if alert and v else ""}"><b>{v}</b><span>{label}</span></div>'
+
+    body = (f'<h1>Information Security Policy Register</h1>'
+            f'<div class="muted">{_e(ws.config["organization"])} · ISO/IEC 27001:2022 · as of {as_of}</div>'
+            f'<div class="stats">{stat(len(ws.policies), "Policies")}{stat(approved, "Approved")}'
+            f'{stat(overdue, "Reviews overdue", True)}{stat(f"{len(applicable)}/93", "Controls applicable")}'
+            f'{stat(gaps, "SoA gaps", True)}</div>'
+            '<div class="scroll"><table><thead><tr><th>ID</th><th>Policy</th><th>Status</th><th>Version</th>'
+            f'<th>Owner</th><th>Next review</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+            f'<h2>Lint findings</h2><ul class="findings">{items}</ul>')
+    return _page("Policy register", body, ws.config["organization"])
+
+
+def _soa_page(ws: Workspace) -> str:
+    rows = []
+    current = None
+    for r in build_soa(ws):
+        if r.theme != current:
+            current = r.theme
+            rows.append(f'<tr><th colspan="5">{_e(current)} controls</th></tr>')
+        links = [f'<a href="policies/{_e(p)}.html">{_e(p)}</a>' for p in r.policies]
+        if r.other:
+            links.append(_e(r.other))
+        rows.append(f'<tr id="{_e(r.control)}"><td class="mono">{_e(r.control)}</td><td>{_e(r.title)}</td>'
+                    f'<td><span class="pill s-{r.status.lower()}">{r.status}</span></td>'
+                    f'<td class="small">{", ".join(links) or "—"}</td><td class="small">{_e(r.justification)}</td></tr>')
+    body = ('<h1>Statement of Applicability</h1>'
+            '<div class="muted">ISO/IEC 27001:2022 Annex A. Built from policy front matter and soa.yaml.</div>'
+            '<div class="scroll soa" style="margin-top:20px"><table><thead><tr><th>Control</th><th>Title</th>'
+            f'<th>Status</th><th>Addressed by</th><th>Justification</th></tr></thead><tbody>{"".join(rows)}'
+            '</tbody></table></div>')
+    return _page("Statement of Applicability", body, ws.config["organization"])
+
+
+def build_site(ws: Workspace, out: str | Path, findings: list[Finding], as_of: date) -> Path:
+    out = Path(out)
+    (out / "policies").mkdir(parents=True, exist_ok=True)
+    (out / "index.html").write_text(_index(ws, findings, as_of), encoding="utf-8")
+    (out / "soa.html").write_text(_soa_page(ws), encoding="utf-8")
+    for p in ws.policies:
+        if p.id:
+            (out / "policies" / f"{p.id}.html").write_text(_policy_page(p, ws, as_of), encoding="utf-8")
+    return out

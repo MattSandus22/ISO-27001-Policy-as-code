@@ -1,0 +1,10 @@
+organization: Northwind Retail (fictional)
+policies_dir: policies
+soa_file: soa.yaml
+default_review_months: 12
+required_sections:
+  - Purpose
+  - Scope
+  - Policy statements
+  - Roles and responsibilities
+  - Exceptions and enforcement
